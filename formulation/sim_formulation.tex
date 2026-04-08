@@ -1,0 +1,131 @@
+% chktex-file 8
+%   Allow dashes
+% chktex-file 17
+%   Don't require matching number of brackets and parentheses
+% chktex-file 11
+%   Allow ellipsis
+% chktex-file 44
+%   Allow regex
+% chktex-file 9
+%   Allow unmatched brackets and parentheses
+% chktex-file 36
+%   ALlow parentheses without spaces in front of them
+% chktex-file 40
+%   Allow factorials
+% chktex-file 12
+%   Don't require inter-word spaces
+% chktex-file 3
+%   Don't require enclosing parentheses with braces
+% chktex-file 13
+%   Don't require intersentence spaces
+% chktex-file 26
+%   Allow spaces in front of punctuation
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\lstset{
+basicstyle=\small\ttfamily,
+columns=flexible,
+breaklines=true
+}
+
+
+\begin{document}
+
+\section*{Simulator Formulation}
+\begin{itemize}
+    \item We seek to create a second-order multi-UAV simulator.
+    \item Ground coordinate system: $O_{x}$ points east, $O_{y}$ points north, and $O_{z}$ points up.
+    \item We have engine thrust $T$, lift $L$ (the normal overload), yaw $\alpha$, roll $\beta$, pitch $\gamma$, local
+        gravitational acceleration $g$, speed $v$, and position $(x, y, z)$. To improve the formulation, we also introduce the
+        3-dimensional velocity vector $\vec{v} = (\dot{x}, \dot{y}, \dot{z})$.
+    \item UAV dynamic model:
+    \begin{align*}
+        \dot{v} &= g(T - \sin \gamma) \\
+        \dot{\gamma} &= \frac{g}{v} (L \cos \beta - \cos \gamma) \\
+        \dot{\alpha} &= \frac{g L \sin \beta}{v \cos \gamma}
+    \end{align*}
+    \item UAV motion model:
+    \begin{align*}
+        \dot{x} &= v \cos \gamma \sin \alpha \\
+        \dot{y} &= v \cos \gamma \cos \alpha \\
+        \dot{z} &= v \sin \gamma
+    \end{align*}
+    \item Flight constraints:
+    \begin{align*}
+        T &\in [-2, 2] \\
+        L &\in [-5, 5] \\
+        \beta &\in [-\frac{\pi}{3}, \frac{\pi}{3}] \\
+        \gamma &\in [-\frac{\pi}{4}, \frac{\pi}{4}] \\
+        v &\in [100 \text{ m/s}, 200 \text{ m/s}]
+    \end{align*}
+\end{itemize}
+
+\section*{Markov Game Formulation}
+\begin{itemize}
+    \item The system is a Markov game with $N$ UAV agents, represented by:
+    \[
+    (N, S, A, T, R, \gamma)
+    \]
+    \begin{itemize}
+        \item For joint state space $S$, joint action space $A$, state transition function $T$, and expected cumulative rewards $R$.
+        \item At time $t$, each UAV has state $s_i^t \in S_i$, performs action $a_i^t \in A_i$ based on its policy $\mu_i$, and
+            receives reward $r_i^t$, where the expected cumulative reward is $R_i = \sum_{t=0}^T \gamma^t r_i^t$ with discount
+            factor $\gamma \in [0, 1]$.
+        \item Each UAV seeks to maximize it own expected return $R_i$.
+    \end{itemize}
+    \item State space:
+    \begin{itemize}
+        \item The state of each UAV is defined as the concatenation of:
+        \begin{enumerate}
+            \item The UAV's own state $s_{i, 0}$: speed $v$, yaw $\alpha$, roll $\beta$, and pitch $\gamma$.
+            \item The observed state of each opponent $[s_{i, 1}, \ldots, s_{i, N-1}]$ which includes, for each opponent $m$:
+            \begin{enumerate}
+                \item Distance $d_{im} = \sqrt{(x_i - x_m)^2 + (y_i - y_m)^2 + (z_i - z_m)^2}$.
+                \item Relative position $R_{im}(x_i - x_m, y_i - y_m, z_i - z_m)$.
+                \item Relative speed $V_{im} = v_i - v_m$.
+                \item Relative velocity $\vec{V}_{im} = \vec{v}_i - \vec{v}_m$.
+                \item Heading crossing angle $\phi^{HCA} = \arccos(\frac{\vec{v_i} \cdot \vec{v_m}}{||\vec{v_i}|| \cdot ||\vec{v_m}||})$.
+                \item Aspect angle $\phi^{AA} = \arccos(\frac{\vec{v_m} \cdot R_{im}}{||\vec{v_m}||})$.
+                \item Angle-off $\phi^{AO} = \arccos(\frac{\vec{v_i} \cdot R_{im}}{||\vec{v_i}||})$.
+            \end{enumerate}
+            \item The observed state of each ally $[s_{i, m+1}, \ldots, s_{i, m+n}]$ which includes, for each ally $n$:
+            \begin{enumerate}
+                \item Distance $d_{in} = \sqrt{(x_i - x_n)^2 + (y_i - y_n)^2 + (z_i - z_n)^2}$.
+                \item Relative position $R_{in}(x_i - x_n, y_i - y_n, z_i - z_n)$.
+                \item Relative speed $V_{in} = v_i - v_n$.
+                \item Relative velocity $\vec{V}_{in} = \vec{v}_i - \vec{v}_n$.
+            \end{enumerate}
+        \end{enumerate}
+        \item When implemented, since there are an arbitrary, changing number of other UAVs based on different initializations
+            $N$ and UAV destruction, the state is embedded as a fixed-length vector by an attention mechanism, where destroyed UAV
+            are masked in a manner that prevents any of its state from affecting the continued policy training.
+    \end{itemize}
+    \item Action space:
+    \begin{itemize}
+        \item The action space used is continuous, and defined as:
+        \[
+        [T, L, \beta]
+        \]
+        \item That is, based on current agent's percieved state and policy, it continuously selects its engine thrust, lift, and
+            roll.
+    \end{itemize}
+    \item State transition function:
+    \begin{itemize}
+        \item State transitions are largely deterministic, and based on each UAV's actions and the dynamic and motion models.
+            Additionally, each UAV's attack area is a cone of angle $A = \pi/3$ with a generatrix length $L = 500$ m, and each
+            opponent falling in this area is considered `attacked', and is destroyed with some configured probability $p$.
+    \end{itemize}
+    \item Reward function:
+    \begin{itemize}
+        \item Being attacked or destroyed: $-0.1$ reward.
+        \item Attacking an opponent: $0.2$ reward.
+        \item Destroying an opponent: $5$ reward.
+    \end{itemize}
+\end{itemize}
+
+\end{document}
