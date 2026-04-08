@@ -4,4 +4,4 @@ If using mamba/conda:
 * To add new dependencies, update the `environment.yml`, then update the environment with `mamba env update -f environment.yml`
 
 If using pip/venv:
-* Install the dependencies with `pip install -r requirements.txt
+* Install the dependencies with `pip install -r requirements.txt`
