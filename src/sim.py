@@ -1,7 +1,9 @@
 # %%
 # Imports
 from scmrepo.git import Git
+from scipy.stats.qmc import PoissonDisk
 import os
+import random
 import numpy as np
 
 PACKAGE_ROOT = Git(root_dir=".").root_dir
@@ -44,14 +46,14 @@ class MultiUAVSimulator:
         Initialize all UAVs at (0, 0, 0), heading east (alpha = pi/2),
         zero roll and pitch, minimum speed.
         """
-        self.state = np.zeros((self.num_uav, 7), dtype=np.float64)
-        self.state[:, self.indices["x"]] = 0.0
-        self.state[:, self.indices["y"]] = 0.0
-        self.state[:, self.indices["z"]] = 0.0
-        self.state[:, self.indices["v"]] = V_MIN
-        self.state[:, self.indices["alpha"]] = np.pi / 2.0
-        self.state[:, self.indices["beta"]] = 0.0
-        self.state[:, self.indices["gamma"]] = 0.0
+        self.state = self.initialize_uavs(
+            np.array([[-10000.0,-10000.0,-10000.0],[10000.0,10000.0,10000.0]]),
+            5000.0,
+            V_MIN,
+            np.pi / 2.0,
+            0.0,
+            0.0
+        )
         return self.state.copy()
 
     def clip_actions(self, actions):
@@ -156,16 +158,59 @@ class MultiUAVSimulator:
             string += f"  Roll (beta): {np.degrees(self.state[i, self.indices['beta']]):.2f} deg\n"
             string += f"  Pitch (gamma): {np.degrees(self.state[i, self.indices['gamma']]):.2f} deg\n"
         return string
+    
 
+    def initialize_uavs(
+        self,
+        bounds: np.ndarray,
+        radius: float,
+        v: float = 0.0,
+        alpha: float = 0.0,
+        beta: float = 0.0,
+        gamma: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Distribute UAVs throughout a 3D cuboid using Poisson disc sampling.
+
+        Args:
+            bounds: (2, 3) array specifying cuboid bounds:
+                    [[x_min, y_min, z_min],
+                    [x_max, y_max, z_max]]
+            radius: Minimum distance between any two UAVs (same units as bounds).
+            v:      Initial speed assigned to all UAVs (default 0.0).
+            alpha:  Initial roll assigned to all UAVs (default 0.0).
+            beta:   Initial pitch assigned to all UAVs (default 0.0).
+            gamma:  Initial yaw assigned to all UAVs (default 0.0).
+
+        Returns:
+            initial_states: (N, 6) array of UAV states [x, y, z, speed, pitch, yaw].
+        """
+        lower = bounds[0]
+        upper = bounds[1]
+
+        sampler = PoissonDisk(d=3, radius=radius, l_bounds=lower, u_bounds=upper)
+        positions = sampler.random(self.num_uav)
+
+        N = len(positions)
+        kinematic_cols = np.full((N, 4), [v, alpha, beta, gamma])
+
+        return np.hstack([positions, kinematic_cols])
 
 # %%
 # Run simulator
-env = MultiUAVSimulator(num_uav=1, dt=DT, g=G)
+env = MultiUAVSimulator(num_uav=4, dt=DT, g=G)
 state = env.reset()
 print("Initial state:", state)
 
 # Simple example: constant moderate thrust, small positive lift, small roll
-actions = np.array([[0.5, 1.0, 0.1]], dtype=np.float64)
+actions = np.array([
+        [0.5, 1.0, 0.1],
+        [0.5, 1.0, 0.1],
+        [0.5, 1.0, 0.1],
+        [0.5, 1.0, 0.1]
+    ],
+    dtype=np.float64
+)
 
 for t in range(10):
     state = env.step(actions)
