@@ -183,7 +183,7 @@ class MultiUAVSimulator:
             gamma:  Initial yaw assigned to all UAVs (default 0.0).
 
         Returns:
-            initial_states: (N, 6) array of UAV states [x, y, z, speed, pitch, yaw].
+            initial_states: (N, 7) array of UAV states [x, y, z, v, alpha, beta, gamma].
         """
         lower = bounds[0]
         upper = bounds[1]
