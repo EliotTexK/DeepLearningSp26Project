@@ -1,10 +1,7 @@
 # %%
 # Imports
-import json
 import os
 from scmrepo.git import Git
-import os
-import json
 import numpy as np
 import plotly.graph_objects as go
 
@@ -121,12 +118,12 @@ def plot_simulation(positions, frame_duration, k):
 
 def compute_scene_bounds(positions, buffer_ratio=0.1):
     # Positions: (T, N, 3)
-    mins = positions.min(axis=(0, 1)) # (3,)
-    maxs = positions.max(axis=(0, 1)) # (3,)
+    mins = positions.min(axis=(0, 1))  # (3,)
+    maxs = positions.max(axis=(0, 1))  # (3,)
 
     center = (mins + maxs) / 2
     half_extent = np.max(maxs - mins) / 2
-    half_extent *= (1 + buffer_ratio)
+    half_extent *= 1 + buffer_ratio
 
     return center, half_extent
 
