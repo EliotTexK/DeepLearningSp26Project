@@ -5,4 +5,5 @@
 *.synctex.gz
 *.out
 .venv
+outputs
 __pycache__
