@@ -7,4 +7,6 @@ dependencies:
   - ipykernel
   - scmrepo
   - scipy
+  - plotly
+  - nbformat
   - pip

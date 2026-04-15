@@ -2,3 +2,5 @@ numpy
 ipykernel
 scmrepo
 scipy
+plotly
+nbformat

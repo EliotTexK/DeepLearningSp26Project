@@ -382,30 +382,42 @@ class MultiUAVSimulator:
 
 
 # %%
-# Run simulator
-env = MultiUAVSimulator(num_uav=4, dt=DT, g=G)
-state = env.reset()
-print("Initial state:", state)
+if __name__ == "__main__":
+    # Run simulator
+    env = MultiUAVSimulator(num_uav=4, dt=DT, g=G)
+    state = env.reset()
+    print("Initial state:", state)
 
-# Simple example: constant moderate thrust, small positive lift, small roll
-actions = np.array(
-    [[0.5, 1.0, 0.1], [0.5, 1.0, 0.1], [0.5, 1.0, 0.1], [0.5, 1.0, 0.1]],
-    dtype=np.float64,
-)
+    # Simple example: constant maximum thrust, constant maximum lift, small roll
+    actions = np.array(
+        [
+            [T_MAX, L_MAX, 0.1],
+            [-T_MAX, L_MAX, 0.1],
+            [T_MAX, -L_MAX, 0.1],
+            [-T_MAX, -L_MAX, 0.1],
+        ],
+        dtype=np.float64,
+    )
 
-env_logs = f"{PACKAGE_ROOT}/outputs/env_logs"
-if not os.path.exists(env_logs):
-    os.makedirs(env_logs)
-    print(f"Created directory {env_logs} for environment logs.")
-else:
-    for file in os.listdir(env_logs):
-        os.remove(os.path.join(env_logs, file))
-    print(f"Cleared existing logs in {env_logs}.")
+    env_logs = f"{PACKAGE_ROOT}/outputs/env_logs"
+    if not os.path.exists(env_logs):
+        os.makedirs(env_logs)
+        print(f"Created directory {env_logs} for environment logs.")
+    else:
+        for file in os.listdir(env_logs):
+            os.remove(os.path.join(env_logs, file))
+        print(f"Cleared existing logs in {env_logs}.")
 
-for t in range(10):
-    state = env.step(actions)
-    vel = env.get_velocity_vectors()
-    env.save_current_state(f"{env_logs}/step_{t}_state.json")
-print(f"Saved environment states to {env_logs}")
+    save_full_state = False
+    positions = []
+    n = 5000
+    for t in range(n):
+        state = env.step(actions)
+        vel = env.get_velocity_vectors()
+        if save_full_state:
+            env.save_current_state(f"{env_logs}/step_{t}_state.json")
+        positions.append(state[:, 0:3])
+    np.save(f"{env_logs}/positions_log.npy", np.array(positions))
+    print(f"Saved environment states to {env_logs}")
 
 # %%
