@@ -5,6 +5,8 @@ from scipy.stats.qmc import PoissonDisk
 import os
 import json
 import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
 
 PACKAGE_ROOT = Git(root_dir=".").root_dir
 
@@ -446,11 +448,45 @@ class MultiUAVSimulator:
         return np.hstack([positions, kinematic_cols])
 
 
+class MultiUAVGymEnv(gym.Env):
+    metadata = {"render_modes": []}
+
+    def __init__(self, num_uav=4, dt=0.05, g=9.81):
+        super().__init__()
+        self.sim = MultiUAVSimulator(num_uav=num_uav, dt=dt, g=g)
+
+        self.num_uav = num_uav
+        self.action_space = spaces.Box(
+            low=np.array([T_MIN, L_MIN, BETA_MIN] * num_uav, dtype=np.float32),
+            high=np.array([T_MAX, L_MAX, BETA_MAX] * num_uav, dtype=np.float32),
+            shape=(num_uav * 3,),
+            dtype=np.float32,
+        )
+
+        # Ragged observation space since each UAV can have different numbers of allies/opponents as UAVs get destroyed. Refactor if we want use fixed-length observations instead.
+        self.observation_space = spaces.Dict(
+            {"obs": spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32)}
+        )
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.sim.reset()
+        initial_obs = [self.sim.get_observations(i) for i in range(self.sim.num_uav)]
+        return {"obs": initial_obs}, {}
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float32).reshape(self.num_uav, 3)
+        obs, rewards, done, info = self.sim.step(action)
+        terminated = done
+        truncated = False
+        return {"obs": obs}, rewards, terminated, truncated, info
+
+
 # %%
 if __name__ == "__main__":
     # Run simulator
-    env = MultiUAVSimulator(num_uav=4, dt=DT, g=G)
-    state = env.reset()
+    env = MultiUAVGymEnv(num_uav=4, dt=DT, g=G)
+    obs, state = env.reset()
     print("Initial state:", state)
 
     # Simple example: constant maximum thrust, constant maximum lift, small roll
@@ -477,10 +513,9 @@ if __name__ == "__main__":
     positions, velocities, attacked, destroyed = [], [], [], []
     n = 5000
     for t in range(n):
-        obs, rewards, done, info = env.step(actions)
-        vel = env.get_velocity_vectors()
+        obs, rewards, terminated, truncated, info = env.step(actions.flatten())
         if save_full_state:
-            env.save_current_state(f"{env_logs}/step_{t}_state.json")
+            env.sim.save_current_state(f"{env_logs}/step_{t}_state.json")
         positions.append(info["positions"])
         velocities.append(info["velocity_vectors"])
         attacked.append(info["attacked"])

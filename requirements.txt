@@ -4,3 +4,4 @@ scmrepo
 scipy
 plotly
 nbformat
+gymnasium

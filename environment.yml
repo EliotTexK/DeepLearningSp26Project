@@ -9,4 +9,5 @@ dependencies:
   - scipy
   - plotly
   - nbformat
+  - gymnasium
   - pip
