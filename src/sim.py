@@ -42,12 +42,10 @@ class MultiUAVSimulator:
         }
         self.team_1_idxs = np.arange(0, num_uav // 2, dtype=int)
         self.team_2_idxs = np.arange(num_uav // 2, num_uav, dtype=int)
+        self.destroyed = np.zeros(self.num_uav, dtype=bool)
+        self.destruction_p = 0.05  # Probability p of being destroyed when attacked - not defined in original paper
 
     def reset(self):
-        """
-        Initialize all UAVs at (0, 0, 0), heading east (alpha = pi/2),
-        zero roll and pitch, minimum speed.
-        """
         self.state = self.initialize_uavs(
             np.array([[-10000.0, -10000.0, -10000.0], [10000.0, 10000.0, 10000.0]]),
             5000.0,
@@ -57,6 +55,41 @@ class MultiUAVSimulator:
             0.0,
         )
         return self.state.copy()
+
+    def remove_destroyed(self):
+        # Removes any UAV with destroyed=True from the simulation state
+
+        alive_mask = ~self.destroyed
+        # Shrink state
+        self.state = self.state[alive_mask]
+        # Shrink destroyed mask
+        self.destroyed = self.destroyed[alive_mask]
+        # Remap team indices
+        old_to_new = np.cumsum(alive_mask) - 1
+        self.team_1_idxs = old_to_new[self.team_1_idxs[alive_mask[self.team_1_idxs]]]
+        self.team_2_idxs = old_to_new[self.team_2_idxs[alive_mask[self.team_2_idxs]]]
+        # Update count
+        self.num_uav = len(self.state)
+
+    def in_attack_cone(self, i, m):
+        # Whether m is in i's attack cone
+        R = self.state[m, :3] - self.state[i, :3]  # Relative position from i to m
+        d = np.linalg.norm(R)  # L2 distance between i and m
+        if d > 500.0:  # Generatrix length of 500m
+            return False
+        velocity_vectors_i = self.get_velocity_vectors()[i]
+        cos_theta = np.dot(velocity_vectors_i, R) / (
+            np.linalg.norm(velocity_vectors_i) * d + 1e-8
+        )  # Angle between i's velocity (direction of attack) and relative position vector
+        return cos_theta >= np.cos(
+            np.pi / 3
+        )  # True if angle is within 60 degree attack cone
+
+    def is_complete(self):
+        # Returns whether the episode is complete (at least one team destroyed)
+        return np.all(self.destroyed[self.team_1_idxs]) or np.all(
+            self.destroyed[self.team_2_idxs]
+        )
 
     def clip_actions(self, actions):
         """
@@ -138,7 +171,39 @@ class MultiUAVSimulator:
 
         # Repack state
         self.state = np.concatenate([x, y, z, v, alpha, beta, gamma], axis=-1)
-        return self.state.copy()
+
+        rewards = np.zeros(self.num_uav, dtype=np.float64)
+        any_destroyed = False
+        for i in range(self.num_uav):
+            if not self.destroyed[i]:
+                if self.in_team_1(i):
+                    opponents = self.team_2_idxs
+                else:
+                    opponents = self.team_1_idxs
+                for m in opponents:
+                    if not self.destroyed[m]:
+                        if self.in_attack_cone(i, m):  # Whether m is in i's attack cone
+                            rewards[i] += 0.2  # 0.2 reward for attacking
+                            rewards[m] -= 0.1  # 0.1 penalty for being attacked
+                            if np.random.rand() < self.destruction_p:
+                                self.destroyed[m] = True
+                                any_destroyed = True
+                                rewards[i] += 5  # 5 reward for destroying an opponent
+                                rewards[m] -= 0.1  # 0.1 penalty for being destroyed
+        if any_destroyed:
+            self.remove_destroyed()
+        done = self.is_complete()
+
+        obs = np.array(
+            [self.get_observations(i) for i in range(self.num_uav)], dtype=object
+        )
+        info = {
+            "velocity_vectors": self.get_velocity_vectors(),
+            "attacked": rewards < 0.2,  # Approximately
+            "destroyed": self.destroyed,
+            "positions": self.state[:, 0:3],
+        }
+        return obs, rewards, done, info
 
     def get_velocity_vectors(self):
         """
@@ -409,15 +474,22 @@ if __name__ == "__main__":
         print(f"Cleared existing logs in {env_logs}.")
 
     save_full_state = False
-    positions = []
+    positions, velocities, attacked, destroyed = [], [], [], []
     n = 5000
     for t in range(n):
-        state = env.step(actions)
+        obs, rewards, done, info = env.step(actions)
         vel = env.get_velocity_vectors()
         if save_full_state:
             env.save_current_state(f"{env_logs}/step_{t}_state.json")
-        positions.append(state[:, 0:3])
+        positions.append(info["positions"])
+        velocities.append(info["velocity_vectors"])
+        attacked.append(info["attacked"])
+        destroyed.append(info["destroyed"])
+
     np.save(f"{env_logs}/positions_log.npy", np.array(positions))
+    np.save(f"{env_logs}/velocities_log.npy", np.array(velocities))
+    np.save(f"{env_logs}/attacked_log.npy", np.array(attacked))
+    np.save(f"{env_logs}/destroyed_log.npy", np.array(destroyed))
     print(f"Saved environment states to {env_logs}")
 
 # %%
