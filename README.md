@@ -5,3 +5,6 @@ If using mamba/conda:
 
 If using pip/venv:
 * Install the dependencies with `pip install -r requirements.txt`
+
+Running Sim:
+* After installing all of the dependencies, run the `sim.py` file and then run `visualize_env_logs.py` 
