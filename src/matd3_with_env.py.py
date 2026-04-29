@@ -7,6 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import matplotlib
+matplotlib.use("Agg")          # headless-safe; swap to "TkAgg" for live window
+import matplotlib.pyplot as plt
 
 # Real UAV combat simulator — place uav_sim.py on your PYTHONPATH or in the
 # same directory as this file.
@@ -20,6 +23,75 @@ from sim import (
 )
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+_HEADER_WIDTH = 72
+
+def _print_header(title: str) -> None:
+    print("\n" + "=" * _HEADER_WIDTH)
+    print(f"  {title}")
+    print("=" * _HEADER_WIDTH)
+
+
+def _print_episode_row(ep: int, ep_return: float, avg_return: float,
+                       steps: int, alive: int, n_agents: int) -> None:
+    """Single-line episode summary."""
+    print(
+        f"  Ep {ep:>7,d} │ "
+        f"Return: {ep_return:>10.3f} │ "
+        f"Avg(last): {avg_return:>10.3f} │ "
+        f"Steps: {steps:>4d} │ "
+        f"Alive: {alive}/{n_agents}"
+    )
+
+
+def _print_separator() -> None:
+    print("  " + "─" * (_HEADER_WIDTH - 2))
+
+
+def _print_attack_event(step: int, rewards: np.ndarray) -> None:
+    r_str = "  ".join(f"A{i}={r:+.2f}" for i, r in enumerate(rewards))
+    print(f"     Attack  step={step:>4d}  │  {r_str}")
+
+
+# ---------------------------------------------------------------------------
+# Reward plot
+# ---------------------------------------------------------------------------
+
+def save_reward_plot(episode_returns: list[float],
+                     log_interval: int,
+                     path: str = "reward_history.png") -> None:
+    """
+    Save a plot of per-episode return and a smoothed rolling average.
+    """
+    returns = np.array(episode_returns)
+    eps     = np.arange(1, len(returns) + 1)
+
+    # Rolling mean with window = log_interval (or all data if shorter)
+    window  = min(log_interval, len(returns))
+    kernel  = np.ones(window) / window
+    smooth  = np.convolve(returns, kernel, mode="valid")
+    smooth_eps = eps[window - 1:]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(eps, returns, color="#9ecae1", linewidth=0.7,
+            alpha=0.6, label="Episode return")
+    ax.plot(smooth_eps, smooth, color="#2171b5", linewidth=2.0,
+            label=f"Rolling mean (w={window})")
+
+    ax.set_xlabel("Episode", fontsize=12)
+    ax.set_ylabel("Total Return", fontsize=12)
+    ax.set_title("MATD3 – UAV Combat: Return over Training", fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"\n  📊  Reward plot saved → {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +137,8 @@ class MultiUAVEnvWrapper:
     * zero reward
     """
 
-    def __init__(self, num_uav: int = 4, dt: float = DT, g: float = G, spawn_range=3000.0, spawn_radius=800.0):
+    def __init__(self, num_uav: int = 4, dt: float = DT, g: float = G,
+                 spawn_range=3000.0, spawn_radius=800.0):
         if num_uav % 2 != 0:
             raise ValueError("num_uav must be even (equal-sized teams).")
         self.num_uav = num_uav
@@ -86,7 +159,8 @@ class MultiUAVEnvWrapper:
 
     def reset(self) -> np.ndarray:
         """Initialise a new episode and return the first joint observation."""
-        self._sim = _FixedSizeMultiUAVSim(num_uav=self.num_uav, dt=self._dt, g=self._g)
+        self._sim = _FixedSizeMultiUAVSim(num_uav=self.num_uav,
+                                          dt=self._dt, g=self._g)
         self._sim.state = self._sim.initialize_uavs(
             bounds=np.array([
                 [-self._spawn_range] * 3,
@@ -112,20 +186,16 @@ class MultiUAVEnvWrapper:
         Returns:
             next_states : ``(N, state_dim)`` float32 ndarray
             rewards     : ``(N,)``           float32 ndarray
-            dones       : ``(N,)``           bool ndarray —
-                          True for individually destroyed agents, or all-True
-                          when the episode terminates (one side wiped out).
+            dones       : ``(N,)``           bool ndarray
             info        : dict forwarded from the simulator
         """
         actions = np.asarray(actions, dtype=np.float64).reshape(self.num_uav, 3)
-        actions[self._sim.destroyed] = 0.0   # mask out dead-agent inputs
+        actions[self._sim.destroyed] = 0.0
 
         _, rewards, episode_done, info = self._sim.step(actions)
 
         next_states = self._build_obs()
 
-        # Per-agent done flags: True if this agent was destroyed at any point,
-        # or if the entire episode has ended (one team wiped out).
         per_agent_done = self._sim.destroyed.copy()
         if episode_done:
             per_agent_done[:] = True
@@ -137,10 +207,6 @@ class MultiUAVEnvWrapper:
     # ------------------------------------------------------------------
 
     def _build_obs(self) -> np.ndarray:
-        """
-        Build a ``(num_uav, state_dim)`` observation array.
-        Rows for destroyed agents are left as zeros.
-        """
         out = np.zeros((self.num_uav, self.state_dim), dtype=np.float32)
         for i in range(self.num_uav):
             if not self._sim.destroyed[i]:
@@ -160,12 +226,6 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
 
     def push(self, joint_state, joint_action, rewards, next_joint_state, dones):
-        """
-        Store one transition.
-          joint_state / next_joint_state : (N, state_dim) arrays
-          joint_action                   : (N, action_dim) arrays
-          rewards / dones                : (N,) arrays
-        """
         self.buffer.append((
             np.array(joint_state,      dtype=np.float32),
             np.array(joint_action,     dtype=np.float32),
@@ -178,11 +238,11 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         joint_s, joint_a, r, joint_ns, d = zip(*batch)
         return (
-            torch.FloatTensor(np.stack(joint_s)).to(DEVICE),   # (B, N, state_dim)
-            torch.FloatTensor(np.stack(joint_a)).to(DEVICE),   # (B, N, action_dim)
-            torch.FloatTensor(np.stack(r)).to(DEVICE),         # (B, N)
-            torch.FloatTensor(np.stack(joint_ns)).to(DEVICE),  # (B, N, state_dim)
-            torch.FloatTensor(np.stack(d)).to(DEVICE),         # (B, N)
+            torch.FloatTensor(np.stack(joint_s)).to(DEVICE),
+            torch.FloatTensor(np.stack(joint_a)).to(DEVICE),
+            torch.FloatTensor(np.stack(r)).to(DEVICE),
+            torch.FloatTensor(np.stack(joint_ns)).to(DEVICE),
+            torch.FloatTensor(np.stack(d)).to(DEVICE),
         )
 
     def __len__(self):
@@ -194,12 +254,7 @@ class ReplayBuffer:
 # ---------------------------------------------------------------------------
 
 class Actor(nn.Module):
-    """
-    Each agent's local policy: a_i = mu_i(s_i).
-
-    Takes only the agent's own observation as input (decentralized execution).
-    Three hidden layers of size 256 as per Table 2.
-    """
+    """Decentralized policy: a_i = mu_i(s_i)."""
 
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
@@ -215,14 +270,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    """
-    Centralized Q-function: Q_i(s, a) where s and a are the *joint*
-    state and action of all agents.
-
-    The joint input is the concatenation of all agents' states and actions,
-    which is the standard CTDE formulation used in MATD3/MADDPG.
-    Three hidden layers of size 256 as per Table 2.
-    """
+    """Centralized Q-function over joint (s, a)."""
 
     def __init__(self, joint_state_dim: int, joint_action_dim: int,
                  hidden_dim: int = 256):
@@ -237,13 +285,6 @@ class Critic(nn.Module):
 
     def forward(self, joint_state: torch.Tensor,
                 joint_action: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            joint_state  : (B, joint_state_dim)
-            joint_action : (B, joint_action_dim)
-        Returns:
-            Q-value      : (B, 1)
-        """
         x = torch.cat([joint_state, joint_action], dim=-1)
         return self.net(x)
 
@@ -253,16 +294,6 @@ class Critic(nn.Module):
 # ---------------------------------------------------------------------------
 
 class MATD3Agent:
-    """
-    One agent in MATD3.
-
-    Owns:
-      - one actor  + its target
-      - two critics + their targets  (clipped double-Q)
-
-    The critics are centralized: they receive the full joint (s, a).
-    The actor is decentralized: it only sees its own local state s_i.
-    """
 
     def __init__(self,
                  agent_id: int,
@@ -272,10 +303,10 @@ class MATD3Agent:
                  joint_action_dim: int,
                  action_low: np.ndarray,
                  action_high: np.ndarray,
-                 hidden_dim: int    = 256,
-                 lr: float          = 3e-4,
-                 gamma: float       = 0.95,
-                 tau: float         = 0.005,
+                 hidden_dim: int     = 256,
+                 lr: float           = 3e-4,
+                 gamma: float        = 0.95,
+                 tau: float          = 0.005,
                  policy_noise: float = 0.2,
                  noise_clip: float   = 0.5,
                  policy_delay: int   = 2):
@@ -291,12 +322,10 @@ class MATD3Agent:
         self.policy_delay = policy_delay
         self._critic_updates = 0
 
-        # ---- Actor ----
         self.actor        = Actor(state_dim, action_dim, hidden_dim).to(DEVICE)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_opt    = optim.Adam(self.actor.parameters(), lr=lr)
 
-        # ---- Critic 1 & 2 ----
         self.critic1        = Critic(joint_state_dim, joint_action_dim, hidden_dim).to(DEVICE)
         self.critic2        = Critic(joint_state_dim, joint_action_dim, hidden_dim).to(DEVICE)
         self.critic1_target = copy.deepcopy(self.critic1)
@@ -307,7 +336,6 @@ class MATD3Agent:
     @torch.no_grad()
     def select_action(self, state: np.ndarray,
                       explore_noise: float = 0.1) -> np.ndarray:
-        """Decentralized execution: only own state s_i is used."""
         s = torch.FloatTensor(state).unsqueeze(0).to(DEVICE)
         a = self.actor(s).squeeze(0)
         a = self._scale(a)
@@ -317,36 +345,22 @@ class MATD3Agent:
         return a.cpu().numpy()
 
     def _scale(self, a: torch.Tensor) -> torch.Tensor:
-        """Map tanh output [-1,1] to [action_low, action_high]."""
         lo, hi = self.action_low, self.action_high
         return lo + (a + 1.0) * 0.5 * (hi - lo)
 
     def update(self,
-               joint_states: torch.Tensor,        # (B, joint_state_dim)
-               joint_actions: torch.Tensor,        # (B, joint_action_dim)
-               rewards: torch.Tensor,              # (B, 1)
-               next_joint_states: torch.Tensor,    # (B, joint_state_dim)
-               dones: torch.Tensor,                # (B, 1)
-               next_actions_all: torch.Tensor,     # (B, joint_action_dim)  — from target actors
-               own_states: torch.Tensor,           # (B, state_dim)  — for actor gradient
-               ) -> dict:
-        """
-        One full MATD3 update for this agent.
+               joint_states: torch.Tensor,
+               joint_actions: torch.Tensor,
+               rewards: torch.Tensor,
+               next_joint_states: torch.Tensor,
+               dones: torch.Tensor,
+               next_actions_all: torch.Tensor,
+               own_states: torch.Tensor) -> dict:
 
-        Step 1 — Critic update (Eq. 3):
-          y = r_i + gamma * min_{k=1,2} Q'^k_i(s', a')|_{a'=mu'(s')}
-          Loss = E[(Q^j_i(s,a) - y)^2]   for j = 1, 2
-
-        Step 2 — Delayed actor update (Eq. 4):
-          Every `policy_delay` critic steps:
-          grad = E[grad_{theta_i} mu_i * grad_{a_i} Q^1_i(s, a)]
-        """
         self._critic_updates += 1
         losses = {}
 
-        # ---- Critic update ----
         with torch.no_grad():
-            # Target policy smoothing (Eq. 5)
             noise = (torch.randn_like(next_actions_all) * self.policy_noise
                      ).clamp(-self.noise_clip, self.noise_clip)
             next_a_smooth = (next_actions_all + noise).clamp(
@@ -358,7 +372,7 @@ class MATD3Agent:
 
             q1_next = self.critic1_target(next_joint_states, next_a_smooth)
             q2_next = self.critic2_target(next_joint_states, next_a_smooth)
-            q_next  = torch.min(q1_next, q2_next)            # clipped double-Q
+            q_next  = torch.min(q1_next, q2_next)
             y       = rewards + self.gamma * (1.0 - dones) * q_next
 
         q1 = self.critic1(joint_states, joint_actions)
@@ -367,39 +381,23 @@ class MATD3Agent:
         critic1_loss = F.mse_loss(q1, y)
         critic2_loss = F.mse_loss(q2, y)
 
-        self.critic1_opt.zero_grad()
-        critic1_loss.backward()
-        self.critic1_opt.step()
-
-        self.critic2_opt.zero_grad()
-        critic2_loss.backward()
-        self.critic2_opt.step()
+        self.critic1_opt.zero_grad(); critic1_loss.backward(); self.critic1_opt.step()
+        self.critic2_opt.zero_grad(); critic2_loss.backward(); self.critic2_opt.step()
 
         losses["critic1"] = critic1_loss.item()
         losses["critic2"] = critic2_loss.item()
 
-        # ---- Delayed actor update ----
         if self._critic_updates % self.policy_delay == 0:
-            # Recompute this agent's action from its own state
-            a_i = self._scale(self.actor(own_states))         # (B, action_dim)
-
-            # Splice a_i back into the joint action tensor
+            a_i = self._scale(self.actor(own_states))
             joint_actions_for_grad = joint_actions.clone()
             start = self.id * self.action_dim
             end   = start + self.action_dim
             joint_actions_for_grad[:, start:end] = a_i
 
-            # Maximize Q^1 w.r.t. actor parameters (gradient ascent)
-            actor_loss = -self.critic1(joint_states,
-                                       joint_actions_for_grad).mean()
-
-            self.actor_opt.zero_grad()
-            actor_loss.backward()
-            self.actor_opt.step()
-
+            actor_loss = -self.critic1(joint_states, joint_actions_for_grad).mean()
+            self.actor_opt.zero_grad(); actor_loss.backward(); self.actor_opt.step()
             losses["actor"] = actor_loss.item()
 
-            # Soft target network updates
             _soft_update(self.actor,   self.actor_target,   self.tau)
             _soft_update(self.critic1, self.critic1_target, self.tau)
             _soft_update(self.critic2, self.critic2_target, self.tau)
@@ -412,12 +410,7 @@ class MATD3Agent:
 # ---------------------------------------------------------------------------
 
 class MATD3:
-    """
-    Multi-Agent Twin Delayed DDPG.
-
-    Coordinates N agents sharing one replay buffer.
-    Implements centralized training / decentralized execution (CTDE).
-    """
+    """Multi-Agent Twin Delayed DDPG (CTDE)."""
 
     def __init__(self,
                  n_agents: int,
@@ -425,15 +418,15 @@ class MATD3:
                  action_dim: int,
                  action_low: np.ndarray,
                  action_high: np.ndarray,
-                 hidden_dim: int    = 256,       # Table 2
-                 lr: float          = 3e-4,       # Table 2
-                 gamma: float       = 0.95,       # Table 2
-                 tau: float         = 0.005,
+                 hidden_dim: int     = 256,
+                 lr: float           = 3e-4,
+                 gamma: float        = 0.95,
+                 tau: float          = 0.005,
                  policy_noise: float = 0.2,
                  noise_clip: float   = 0.5,
-                 policy_delay: int   = 2,         # Table 2
-                 buffer_size: int    = 1_000_000, # Table 2
-                 batch_size: int     = 256):      # Table 2
+                 policy_delay: int   = 2,
+                 buffer_size: int    = 1_000_000,
+                 batch_size: int     = 256):
 
         self.n_agents   = n_agents
         self.state_dim  = state_dim
@@ -467,55 +460,40 @@ class MATD3:
 
     def select_actions(self, states: np.ndarray,
                        explore_noise: float = 0.1) -> np.ndarray:
-        """
-        Decentralized execution: each agent acts on its own state.
-
-        Args:
-            states : (N, state_dim)
-        Returns:
-            actions: (N, action_dim)
-        """
         return np.array([
             agent.select_action(states[i], explore_noise)
             for i, agent in enumerate(self.agents)
         ])
 
     def store_transition(self, states, actions, rewards, next_states, dones):
-        """Push one time-step into the shared replay buffer."""
         self.buffer.push(states, actions, rewards, next_states, dones)
 
     def train_step(self) -> dict:
-        """
-        Sample a mini-batch and update all agents.
-        Returns a dict of losses keyed by agent index.
-        """
         if len(self.buffer) < self.batch_size:
             return {}
 
         joint_s, joint_a, rewards, joint_ns, dones = self.buffer.sample(
             self.batch_size)
 
-        # joint_s  : (B, N, state_dim)  -> flatten to (B, N*state_dim)
         B = joint_s.shape[0]
-        flat_js  = joint_s.view(B, -1)    # (B, N*state_dim)
-        flat_ja  = joint_a.view(B, -1)    # (B, N*action_dim)
-        flat_njs = joint_ns.view(B, -1)   # (B, N*state_dim)
+        flat_js  = joint_s.view(B, -1)
+        flat_ja  = joint_a.view(B, -1)
+        flat_njs = joint_ns.view(B, -1)
 
-        # Compute next joint actions from all target actors (for critic target)
         with torch.no_grad():
             next_actions = []
             for i, agent in enumerate(self.agents):
-                ns_i   = joint_ns[:, i, :]          # (B, state_dim)
-                a_next = agent.actor_target(ns_i)   # (B, action_dim)
+                ns_i   = joint_ns[:, i, :]
+                a_next = agent.actor_target(ns_i)
                 a_next = agent._scale(a_next)
                 next_actions.append(a_next)
-            next_joint_a = torch.cat(next_actions, dim=-1)  # (B, N*action_dim)
+            next_joint_a = torch.cat(next_actions, dim=-1)
 
         all_losses = {}
         for i, agent in enumerate(self.agents):
-            r_i    = rewards[:, i].unsqueeze(1)   # (B, 1)
-            done_i = dones[:, i].unsqueeze(1)     # (B, 1)
-            own_si = joint_s[:, i, :]             # (B, state_dim)
+            r_i    = rewards[:, i].unsqueeze(1)
+            done_i = dones[:, i].unsqueeze(1)
+            own_si = joint_s[:, i, :]
 
             losses = agent.update(
                 joint_states      = flat_js,
@@ -530,40 +508,61 @@ class MATD3:
 
         return all_losses
 
-    def train(self, env, n_episodes: int = 100_000,
-              max_steps: int = 300,
+    # ------------------------------------------------------------------
+    # Main training loop
+    # ------------------------------------------------------------------
+
+    def train(self,
+              env,
+              n_episodes: int     = 100_000,
+              max_steps: int      = 300,
               explore_noise: float = 0.1,
-              log_interval: int = 1000) -> list[float]:
+              log_interval: int   = 1000,
+              plot_path: str      = "reward_history.png") -> list[float]:
         """
-        Main training loop.
+        Main training loop with neat per-episode logging and reward plot.
 
         Args:
-            env          : environment exposing
-                               reset() -> (N, state_dim) ndarray
-                               step(actions) -> (next_states, rewards, dones, info)
-                           Compatible with both ``MultiUAVEnvWrapper`` and
-                           ``DummyMultiAgentEnv``.
-            n_episodes   : total training episodes
-            max_steps    : max steps per episode
-            explore_noise: Gaussian exploration noise std
-            log_interval : print average return every N episodes
+            env           : environment with reset() / step() interface
+            n_episodes    : total training episodes
+            max_steps     : max steps per episode
+            explore_noise : Gaussian exploration noise std
+            log_interval  : print rolling-average summary every N episodes
+            plot_path     : where to save the final reward graph
 
         Returns:
-            episode_returns: list of total returns per episode
+            episode_returns : list of total returns (one float per episode)
         """
-        episode_returns = []
+        episode_returns: list[float] = []
+
+        _print_header(
+            f"MATD3 Training  │  {self.n_agents} agents  │  "
+            f"state_dim={self.state_dim}  │  action_dim={self.action_dim}  │  "
+            f"device={DEVICE}"
+        )
+        print(
+            f"  Episodes: {n_episodes:,}  │  max_steps/ep: {max_steps}  │  "
+            f"batch: {self.batch_size}  │  explore_noise: {explore_noise}\n"
+        )
+        _print_separator()
 
         for ep in range(1, n_episodes + 1):
-            states    = env.reset()                 # (N, state_dim)
+            states    = env.reset()
             ep_return = 0.0
+            step      = 0
 
-            for _ in range(max_steps):
+            print(f"  ┌─ Ep {ep:>7,d} " + "─" * 50)
+
+            for step in range(1, max_steps + 1):
                 actions = self.select_actions(states, explore_noise)
-                next_states, rewards, dones, info = env.step(actions)  # ← name it info
-                if any(rewards > 0):
-                    print(f"  Attack event at step {info}, rewards: {rewards}")
+                next_states, rewards, dones, info = env.step(actions)
 
-                self.store_transition(states, actions, rewards, next_states, dones)
+                # ── Print notable reward events ──────────────────────────
+                if np.any(rewards != 0):
+                    _print_attack_event(step, rewards)
+
+                self.store_transition(states, actions, rewards,
+                                      next_states, dones)
                 self.train_step()
 
                 ep_return += float(np.sum(rewards))
@@ -574,9 +573,32 @@ class MATD3:
 
             episode_returns.append(ep_return)
 
+            # ── Per-episode summary line ─────────────────────────────────
+            alive = int(np.sum(~env._sim.destroyed))
+            avg   = float(np.mean(episode_returns[-log_interval:]))
+            print(
+                f"  └─ Return: {ep_return:>10.3f} │ "
+                f"Avg(last {log_interval}): {avg:>10.3f} │ "
+                f"Steps: {step:>4d} │ "
+                f"Alive: {alive}/{self.n_agents}"
+            )
+
+            # ── Rolling-average banner every log_interval episodes ───────
             if ep % log_interval == 0:
-                avg = np.mean(episode_returns[-log_interval:])
-                print(f"Episode {ep:>7d} | Avg Return (last {log_interval}): {avg:.7f}")
+                _print_separator()
+                print(
+                    f"    Checkpoint ep {ep:,}  │  "
+                    f"Avg return (last {log_interval}): {avg:+.4f}  │  "
+                    f"Buffer: {len(self.buffer):,} transitions"
+                )
+                _print_separator()
+                # Refresh the plot at every checkpoint
+                save_reward_plot(episode_returns, log_interval, path=plot_path)
+
+        # ── Final plot ───────────────────────────────────────────────────
+        _print_separator()
+        print(f"\n  Training complete.  Total episodes: {n_episodes:,}")
+        save_reward_plot(episode_returns, log_interval, path=plot_path)
 
         return episode_returns
 
@@ -585,8 +607,8 @@ class MATD3:
 # Utilities
 # ---------------------------------------------------------------------------
 
-def _soft_update(net: nn.Module, target: nn.Module, tau: float):
-    """Polyak averaging: theta_target <- tau*theta + (1-tau)*theta_target."""
+def _soft_update(net: nn.Module, target: nn.Module, tau: float) -> None:
+    """Polyak averaging: θ_target ← τ·θ + (1-τ)·θ_target."""
     for p, tp in zip(net.parameters(), target.parameters()):
         tp.data.copy_(tau * p.data + (1.0 - tau) * tp.data)
 
@@ -596,15 +618,19 @@ def _soft_update(net: nn.Module, target: nn.Module, tau: float):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    NUM_UAV    = 4   # must be even (equal teams)
+    NUM_UAV    = 4
     ACTION_DIM = 3   # [T, L, beta]
 
     action_low  = np.array([T_MIN, L_MIN, BETA_MIN])
     action_high = np.array([T_MAX, L_MAX, BETA_MAX])
 
-    # Real UAV environment — state_dim is derived from the team configuration:
-    #   4 + 11*(N/2) + 8*(N/2-1) = 34 for N=4
-    env = MultiUAVEnvWrapper(num_uav=NUM_UAV, dt=DT, g=G, spawn_range=3000.0, spawn_radius=800.0)
+    env = MultiUAVEnvWrapper(
+        num_uav      = NUM_UAV,
+        dt           = DT,
+        g            = G,
+        spawn_range  = 3000.0,
+        spawn_radius = 800.0,
+    )
     STATE_DIM = env.state_dim
 
     matd3 = MATD3(
@@ -613,7 +639,6 @@ if __name__ == "__main__":
         action_dim   = ACTION_DIM,
         action_low   = action_low,
         action_high  = action_high,
-        # Hyper-parameters from Table 2
         hidden_dim   = 256,
         lr           = 3e-4,
         gamma        = 0.95,
@@ -625,8 +650,12 @@ if __name__ == "__main__":
         batch_size   = 256,
     )
 
-    print(f"MATD3 + UAV Sim | {NUM_UAV} agents | state_dim={STATE_DIM} | action_dim={ACTION_DIM}")
-    print("Running smoke test (100 episodes)...")
+    returns = matd3.train(
+        env,
+        n_episodes    = 100,
+        max_steps     = 2000,
+        log_interval  = 50,
+        plot_path     = "reward_history.png",
+    )
 
-    returns = matd3.train(env, n_episodes=100, max_steps=2000, log_interval=50)
-    print(f"Smoke test complete. Final episode return: {returns[-1]:.3f}")
+    print(f"\n  Final episode return: {returns[-1]:.3f}")
