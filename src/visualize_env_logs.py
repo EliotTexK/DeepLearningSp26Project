@@ -134,7 +134,7 @@ env_logs = f"{PACKAGE_ROOT}/outputs/env_logs"
 
 positions = np.load(f"{env_logs}/positions_log.npy")
 plot_simulation(
-    positions, frame_duration=5, k=50
-)  # Show only every 50 frames, with 5 ms between frames
+    positions, frame_duration=10, k=1
+)  # Show only every k frames, with frame_duration ms between frames
 
 # %%
