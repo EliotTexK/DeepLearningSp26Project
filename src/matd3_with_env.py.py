@@ -362,13 +362,8 @@ class MATD3Agent:
 
         with torch.no_grad():
             noise = (torch.randn_like(next_actions_all) * self.policy_noise
-                     ).clamp(-self.noise_clip, self.noise_clip)
-            next_a_smooth = (next_actions_all + noise).clamp(
-                self.action_low.repeat(next_actions_all.shape[-1] //
-                                       self.action_dim),
-                self.action_high.repeat(next_actions_all.shape[-1] //
-                                        self.action_dim),
-            )
+                    ).clamp(-self.noise_clip, self.noise_clip)
+            next_a_smooth = next_actions_all + noise
 
             q1_next = self.critic1_target(next_joint_states, next_a_smooth)
             q2_next = self.critic2_target(next_joint_states, next_a_smooth)
@@ -516,7 +511,7 @@ class MATD3:
               env,
               n_episodes: int     = 100_000,
               max_steps: int      = 300,
-              explore_noise: float = 0.1,
+              explore_noise: float = 0.2,
               log_interval: int   = 1000,
               plot_path: str      = "reward_history.png") -> list[float]:
         """
@@ -556,11 +551,11 @@ class MATD3:
             for step in range(1, max_steps + 1):
                 actions = self.select_actions(states, explore_noise)
                 next_states, rewards, dones, info = env.step(actions)
-
+                '''
                 # ── Print notable reward events ──────────────────────────
                 if np.any(rewards != 0):
                     _print_attack_event(step, rewards)
-
+                '''
                 self.store_transition(states, actions, rewards,
                                       next_states, dones)
                 self.train_step()
@@ -592,8 +587,22 @@ class MATD3:
                     f"Buffer: {len(self.buffer):,} transitions"
                 )
                 _print_separator()
-                # Refresh the plot at every checkpoint
                 save_reward_plot(episode_returns, log_interval, path=plot_path)
+                
+                # ── NEW: save weights ────────────────────────────────────────
+                checkpoint = {
+                    i: {
+                        "actor":          agent.actor.state_dict(),
+                        "actor_target":   agent.actor_target.state_dict(),
+                        "critic1":        agent.critic1.state_dict(),
+                        "critic2":        agent.critic2.state_dict(),
+                        "critic1_target": agent.critic1_target.state_dict(),
+                        "critic2_target": agent.critic2_target.state_dict(),
+                    }
+                    for i, agent in enumerate(self.agents)
+                }
+                torch.save(checkpoint, f"checkpoint_ep{ep}.pt")
+                print(f"  💾  Checkpoint saved → checkpoint_ep{ep}.pt")
 
         # ── Final plot ───────────────────────────────────────────────────
         _print_separator()
@@ -652,8 +661,8 @@ if __name__ == "__main__":
 
     returns = matd3.train(
         env,
-        n_episodes    = 100,
-        max_steps     = 2000,
+        n_episodes    = 10000,
+        max_steps     = 300,
         log_interval  = 50,
         plot_path     = "reward_history.png",
     )
