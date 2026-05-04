@@ -85,7 +85,7 @@ def build_mesh_for_frame(positions, velocities, scale=1.0):
     return all_x, all_y, all_z, all_i, all_j, all_k
 
 
-def make_mesh3d(positions, velocities, scale=1.0):
+def make_mesh3d(positions, velocities, scale=1.0, color="blue"):
     x, y, z, i, j, k = build_mesh_for_frame(positions, velocities, scale)
     return go.Mesh3d(
         x=x,
@@ -94,7 +94,7 @@ def make_mesh3d(positions, velocities, scale=1.0):
         i=i,
         j=j,
         k=k,
-        color="blue",
+        color=color,
         opacity=1.0,
         flatshading=True,
         lighting=dict(diffuse=0.9, specular=0.3, ambient=0.3),
@@ -118,8 +118,23 @@ def plot_simulation(positions, velocities, frame_duration, k):
     center, half_extent = compute_scene_bounds(positions, buffer_ratio=0.1)
     scale = half_extent * 0.05
 
+    N = every_k_positions.shape[1]
+    half = N // 2
+
+    data = []
+    for n in range(N):
+        color = "red" if n < half else "blue"
+        data.append(
+            make_mesh3d(
+                every_k_positions[0][n : n + 1],
+                every_k_velocities[0][n : n + 1],
+                scale,
+                color=color,
+            )
+        )
+
     fig = go.Figure(
-        data=[make_mesh3d(every_k_positions[0], every_k_velocities[0], scale)],
+        data=data,
         layout=go.Layout(
             scene=dict(
                 xaxis=dict(range=[center[0] - half_extent, center[0] + half_extent]),
@@ -168,7 +183,7 @@ def plot_simulation(positions, velocities, frame_duration, k):
         frames=[
             go.Frame(
                 name=f"frame_{t}",
-                data=[make_mesh3d(every_k_positions[t], every_k_velocities[t], scale)],
+                data=data,
                 layout=go.Layout(
                     annotations=[
                         dict(
