@@ -46,10 +46,12 @@ class MultiUAVSimulator:
         self.team_2_idxs = np.arange(num_uav // 2, num_uav, dtype=int)
         self.destroyed = np.zeros(self.num_uav, dtype=bool)
         self.destruction_p = 0.05  # Probability p of being destroyed when attacked - not defined in original paper
+        self.bounds = np.array([[-10000.0, -10000.0, -10000.0], [10000.0, 10000.0, 10000.0]])
 
     def reset(self):
         self.state = self.initialize_uavs(
-            np.array([[-10000.0, -10000.0, -10000.0], [10000.0, 10000.0, 10000.0]]),
+            # don't spawn too close to combat zone bounds
+            np.array([[-5000.0, -5000.0, -5000.0], [5000.0, 5000.0, 5000.0]]),
             5000.0,
             V_MIN,
             np.pi / 2.0,
@@ -192,6 +194,11 @@ class MultiUAVSimulator:
                                 any_destroyed = True
                                 rewards[i] += 5  # 5 reward for destroying an opponent
                                 rewards[m] -= 0.1  # 0.1 penalty for being destroyed
+                
+                # Penalize UAV going out of bounds
+                if self.is_out_of_bounds(i):
+                    rewards[i] -= 0.1
+
         if any_destroyed:
             self.remove_destroyed()
         done = self.is_complete()
@@ -206,6 +213,14 @@ class MultiUAVSimulator:
             "positions": self.state[:, 0:3],
         }
         return obs, rewards, done, info
+
+    def is_out_of_bounds(self, i):
+        return self.state[i][0] < self.bounds[0][0] or \
+               self.state[i][0] > self.bounds[1][0] or \
+               self.state[i][1] < self.bounds[0][1] or \
+               self.state[i][1] > self.bounds[1][1] or \
+               self.state[i][2] < self.bounds[0][2] or \
+               self.state[i][2] > self.bounds[1][2]
 
     def get_velocity_vectors(self):
         """
