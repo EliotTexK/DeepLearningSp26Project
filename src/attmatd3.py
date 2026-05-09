@@ -23,9 +23,6 @@ from sim import (
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# ---------------------------------------------------------------------------
-# Logging helpers  (unchanged from MATD3)
-# ---------------------------------------------------------------------------
 
 _HEADER_WIDTH = 72
 
@@ -42,9 +39,6 @@ def _print_attack_event(step: int, rewards: np.ndarray) -> None:
     print(f"     Attack  step={step:>4d}  │  {r_str}")
 
 
-# ---------------------------------------------------------------------------
-# Reward plot  (unchanged)
-# ---------------------------------------------------------------------------
 
 def save_reward_plot(episode_returns: list[float],
                      log_interval: int,
@@ -72,10 +66,6 @@ def save_reward_plot(episode_returns: list[float],
     print(f"\n  📊  Reward plot saved → {path}")
 
 
-# ---------------------------------------------------------------------------
-# UAV environment adapter  (unchanged from MATD3)
-# ---------------------------------------------------------------------------
-
 class _FixedSizeMultiUAVSim(MultiUAVSimulator):
     """Keeps state array fixed-size by zeroing destroyed agents instead of removing them."""
     
@@ -88,20 +78,7 @@ class _FixedSizeMultiUAVSim(MultiUAVSimulator):
 
 
 class MultiUAVEnvWrapper:
-    """
-    Adapter that presents MultiUAVSimulator to ATT-MATD3.train().
-
-    The wrapper additionally exposes per-observation slice dimensions so
-    that the attention networks can split the flat state vector back into
-    (own, opponents, allies) segments:
-
-        own_dim   = 4   (speed + 3 attitude angles)
-        opp_dim   = 11  (per-opponent features)
-        ally_dim  = 8   (per-ally features)
-        n_opp     = num_uav // 2
-        n_ally    = num_uav // 2 - 1
-        state_dim = own_dim + opp_dim * n_opp + ally_dim * n_ally
-    """
+    #Adapter that presents MultiUAVSimulator to ATT-MATD3.train().
 
     OWN_DIM  = 4
     OPP_DIM  = 11
@@ -165,10 +142,6 @@ class MultiUAVEnvWrapper:
         return out
 
 
-# ---------------------------------------------------------------------------
-# Replay buffer  (unchanged)
-# ---------------------------------------------------------------------------
-
 class ReplayBuffer:
 
     def __init__(self, capacity: int = 1_000_000):
@@ -199,26 +172,9 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-# ---------------------------------------------------------------------------
-# Attention module  (Eq. 7 / 8 in the paper)
-# ---------------------------------------------------------------------------
 
 class AttentionModule(nn.Module):
-    """
-    Single-head dot-product attention with death masking.
-
-    Given a query (the agent's own embedding) and a set of key/value
-    pairs (opponent or ally embeddings), computes:
-
-        alpha_j = (q^T W_q^T W_k k_j) / sqrt(d)
-        mask:    alpha_j = -inf  for destroyed entities
-        v_agg   = sum_j  softmax(alpha_j) * W_v * x_j
-
-    Args:
-        query_dim : dimensionality of the query vector (own-state encoding)
-        kv_dim    : dimensionality of each key/value vector (entity encoding)
-        embed_dim : projected dimensionality (d in the paper)
-    """
+    #Single-head dot-product attention with death masking.
 
     def __init__(self, query_dim: int, kv_dim: int, embed_dim: int = 64):
         super().__init__()
@@ -228,68 +184,33 @@ class AttentionModule(nn.Module):
         self.W_v = nn.Linear(kv_dim,   embed_dim, bias=False)
 
     def forward(self,
-                query: torch.Tensor,          # (B, query_dim)
-                keys:  torch.Tensor,          # (B, N_entities, kv_dim)
-                mask:  torch.Tensor | None = None  # (B, N_entities) bool, True = dead
-               ) -> torch.Tensor:             # (B, embed_dim)
-        """
-        Args:
-            query : own-state encoding, shape (B, query_dim)
-            keys  : entity state encodings, shape (B, N, kv_dim)
-            mask  : boolean tensor, True where entity is destroyed (B, N)
-
-        Returns:
-            Weighted sum of value vectors, shape (B, embed_dim)
-        """
+                query: torch.Tensor,          
+                keys:  torch.Tensor,         
+                mask:  torch.Tensor | None = None 
+               ) -> torch.Tensor:            
+        
         B, N, _ = keys.shape
 
-        q = self.W_q(query)                          # (B, embed_dim)
-        k = self.W_k(keys)                           # (B, N, embed_dim)
-        v = self.W_v(keys)                           # (B, N, embed_dim)
+        q = self.W_q(query)                          
+        k = self.W_k(keys)                           
+        v = self.W_v(keys)                           
 
-        # Scaled dot-product scores: (B, N)
         scores = torch.bmm(k, q.unsqueeze(-1)).squeeze(-1) / (self.embed_dim ** 0.5)
 
-        # Death masking: set destroyed entity scores to -inf
         if mask is not None:
             scores = scores.masked_fill(mask, float("-inf"))
 
-        weights = torch.softmax(scores, dim=-1)      # (B, N)
+        weights = torch.softmax(scores, dim=-1)      
 
-        # Guard against all-masked rows (all -inf → NaN after softmax)
         weights = torch.nan_to_num(weights, nan=0.0)
 
-        # Weighted sum: (B, embed_dim)
         agg = torch.bmm(weights.unsqueeze(1), v).squeeze(1)
         return agg
 
 
-# ---------------------------------------------------------------------------
-# ATT-MATD3 Actor  (policy network, Fig. 3 / Eq. 6-7)
-# ---------------------------------------------------------------------------
-
 class AttentionActor(nn.Module):
-    """
-    Decentralized policy with attention over opponents and allies.
-
-    Architecture (mirrors Fig. 3):
-        1. Linear encoder for own state  →  own_enc  (embed_dim)
-        2. Linear encoder for each opponent state  →  opp_enc_i  (embed_dim)
-        3. Attention(own_enc, opp_enc_*) with death mask  →  v_oppo  (embed_dim)
-        4. Linear encoder for each ally state  →  ally_enc_i  (embed_dim)
-        5. Attention(own_enc, ally_enc_*) with death mask  →  v_ally  (embed_dim)
-        6. Concat([v_oppo, v_ally])  →  2-layer MLP  →  tanh  →  action
-
-    Args:
-        own_dim    : dimension of agent's own-state slice (4 in the paper)
-        opp_dim    : dimension of per-opponent feature slice (11 in the paper)
-        ally_dim   : dimension of per-ally feature slice (8 in the paper)
-        n_opp      : number of opponents observed
-        n_ally     : number of allies observed (self excluded)
-        action_dim : output action dimension (3 in the paper)
-        embed_dim  : attention projection dimension
-        hidden_dim : MLP hidden layer width
-    """
+    
+   # Decentralized policy with attention over opponents and allies.
 
     def __init__(self,
                  own_dim: int,
@@ -307,17 +228,14 @@ class AttentionActor(nn.Module):
         self.n_opp    = n_opp
         self.n_ally   = n_ally
 
-        # Encoders that project raw features into the shared embed space
         self.own_encoder  = nn.Sequential(nn.Linear(own_dim,  embed_dim), nn.ReLU())
         self.opp_encoder  = nn.Sequential(nn.Linear(opp_dim,  embed_dim), nn.ReLU())
         self.ally_encoder = nn.Sequential(nn.Linear(ally_dim, embed_dim), nn.ReLU())
 
-        # Two attention pools — one per entity type
         self.opp_att  = AttentionModule(embed_dim, embed_dim, embed_dim)
         self.ally_att = AttentionModule(embed_dim, embed_dim, embed_dim)
 
-        # 2-layer MLP that maps concatenated embeddings → action
-        in_dim = embed_dim * 2  # v_oppo ++ v_ally
+        in_dim = embed_dim * 2 
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
@@ -325,25 +243,24 @@ class AttentionActor(nn.Module):
         )
 
     def forward(self,
-                state: torch.Tensor,             # (B, state_dim)
-                opp_mask:  torch.Tensor | None = None,   # (B, n_opp)  bool
-                ally_mask: torch.Tensor | None = None,   # (B, n_ally) bool
-               ) -> torch.Tensor:                # (B, action_dim)
+                state: torch.Tensor,            
+                opp_mask:  torch.Tensor | None = None,   
+                ally_mask: torch.Tensor | None = None,   
+               ) -> torch.Tensor:                
 
-        own, opps, allies = self._split(state)   # own (B,4), opps (B,n,11), allies (B,n,8)
+        own, opps, allies = self._split(state)   
 
-        # Encode
-        own_enc  = self.own_encoder(own)                         # (B, embed_dim)
+        own_enc  = self.own_encoder(own)                         
         opp_enc  = self.opp_encoder(opps.reshape(-1, self.opp_dim))
-        opp_enc  = opp_enc.reshape(state.shape[0], self.n_opp, -1)  # (B, n_opp, embed_dim)
+        opp_enc  = opp_enc.reshape(state.shape[0], self.n_opp, -1)  
 
-        # Attend
-        v_oppo = self.opp_att(own_enc, opp_enc, opp_mask)       # (B, embed_dim)
+        
+        v_oppo = self.opp_att(own_enc, opp_enc, opp_mask)       
 
         if self.n_ally > 0:
             ally_enc = self.ally_encoder(allies.reshape(-1, self.ally_dim))
             ally_enc = ally_enc.reshape(state.shape[0], self.n_ally, -1)
-            v_ally   = self.ally_att(own_enc, ally_enc, ally_mask)  # (B, embed_dim)
+            v_ally   = self.ally_att(own_enc, ally_enc, ally_mask)  
         else:
             v_ally = torch.zeros_like(v_oppo)
 
@@ -364,30 +281,10 @@ class AttentionActor(nn.Module):
         return own, opps, allies
 
 
-# ---------------------------------------------------------------------------
-# ATT-MATD3 Critic  (centralized Q-function, Eq. 8)
-# ---------------------------------------------------------------------------
-
 class AttentionCritic(nn.Module):
-    """
-    Centralized Q-function with attention over allied (state, action) pairs.
-
-    Architecture (mirrors Eq. 8):
-        1. For each ally j: encode (s_j, a_j) → e_j   (embed_dim)
-        2. Attention(e_i, e_j for j≠i) with death mask → weighted sum
-        3. 2-layer MLP → Q-value scalar
-
-    In practice we include ALL agents (self + allies) as the key set and
-    let the attention learn whom to focus on, consistent with the paper's
-    centralized critic that receives joint (s, a).
-
-    Args:
-        n_agents      : total number of agents
-        own_state_dim : per-agent state dimension
-        action_dim    : per-agent action dimension
-        embed_dim     : attention projection size
-        hidden_dim    : MLP hidden width
-    """
+    
+    #Centralized Q-function with attention over allied (state, action) pairs.
+    
 
     def __init__(self,
                  n_agents: int,
@@ -415,11 +312,11 @@ class AttentionCritic(nn.Module):
         )
 
     def forward(self,
-                joint_state:  torch.Tensor,          # (B, N * state_dim)
-                joint_action: torch.Tensor,          # (B, N * action_dim)
+                joint_state:  torch.Tensor,          
+                joint_action: torch.Tensor, 
                 agent_id: int,
-                done_mask: torch.Tensor | None = None  # (B, N) bool
-               ) -> torch.Tensor:                    # (B, 1)
+                done_mask: torch.Tensor | None = None 
+               ) -> torch.Tensor:             
 
         B = joint_state.shape[0]
         N = self.n_agents
@@ -427,35 +324,23 @@ class AttentionCritic(nn.Module):
         states  = joint_state.reshape(B, N, self.state_dim)
         actions = joint_action.reshape(B, N, self.action_dim)
 
-        # Concatenate (s_j, a_j) for each agent j
-        sa = torch.cat([states, actions], dim=-1)   # (B, N, state+action)
+        sa = torch.cat([states, actions], dim=-1)   
 
-        # Encode every entity
         enc = self.entity_encoder(sa.reshape(B * N, -1))
-        enc = enc.reshape(B, N, -1)                 # (B, N, embed_dim)
+        enc = enc.reshape(B, N, -1)                
 
-        # Query is this agent's own encoding
-        query = enc[:, agent_id, :]                 # (B, embed_dim)
+        query = enc[:, agent_id, :]                 
 
-        # Attend over ALL agents (self-attention gives global context)
-        agg = self.att(query, enc, done_mask)        # (B, embed_dim)
+        agg = self.att(query, enc, done_mask)        
 
-        return self.mlp(agg)                         # (B, 1)
+        return self.mlp(agg)                        
 
 
-# ---------------------------------------------------------------------------
-# Per-agent ATT-MATD3 logic
-# ---------------------------------------------------------------------------
+
 
 class ATTMATD3Agent:
-    """
-    Single agent in the ATT-MATD3 framework.
-
-    Replaces the flat Actor/Critic from MATD3Agent with the
-    attention-based AttentionActor / AttentionCritic.
-    Everything else (double-Q, delayed policy update, target
-    smoothing, soft updates) is identical to MATD3.
-    """
+    
+    #Single agent in the ATT-MATD3 framework.
 
     def __init__(self,
                  agent_id: int,
@@ -492,8 +377,7 @@ class ATTMATD3Agent:
         self.noise_clip   = noise_clip
         self.policy_delay = policy_delay
         self._critic_updates = 0
-
-        # --- Actor ---
+        #actor
         actor_kwargs = dict(
             own_dim=own_dim, opp_dim=opp_dim, ally_dim=ally_dim,
             n_opp=n_opp, n_ally=n_ally,
@@ -503,7 +387,7 @@ class ATTMATD3Agent:
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_opt    = optim.Adam(self.actor.parameters(), lr=lr)
 
-        # --- Critic ---
+        #  critic
         critic_kwargs = dict(
             n_agents=n_agents, own_state_dim=state_dim,
             action_dim=action_dim, embed_dim=embed_dim, hidden_dim=hidden_dim,
@@ -515,15 +399,13 @@ class ATTMATD3Agent:
         self.critic1_opt    = optim.Adam(self.critic1.parameters(), lr=lr)
         self.critic2_opt    = optim.Adam(self.critic2.parameters(), lr=lr)
 
-    # ------------------------------------------------------------------
-    # Action selection
-    # ------------------------------------------------------------------
+    
 
     @torch.no_grad()
     def select_action(self, state: np.ndarray,
                       explore_noise: float = 0.1) -> np.ndarray:
         s = torch.FloatTensor(state).unsqueeze(0).to(DEVICE)
-        a = self.actor(s)           # no mask at inference (live agents only)
+        a = self.actor(s)          
         a = self._scale(a).squeeze(0)
         if explore_noise > 0:
             noise = torch.randn_like(a) * explore_noise
@@ -534,26 +416,22 @@ class ATTMATD3Agent:
         lo, hi = self.action_low, self.action_high
         return lo + (a + 1.0) * 0.5 * (hi - lo)
 
-    # ------------------------------------------------------------------
-    # Update
-    # ------------------------------------------------------------------
 
     def update(self,
-               joint_states: torch.Tensor,        # (B, N*state_dim)
-               joint_actions: torch.Tensor,       # (B, N*action_dim)
-               rewards: torch.Tensor,             # (B, 1)
-               next_joint_states: torch.Tensor,   # (B, N*state_dim)
-               dones: torch.Tensor,               # (B, 1)
-               next_actions_all: torch.Tensor,    # (B, N*action_dim)
-               own_states: torch.Tensor,          # (B, state_dim)
-               done_mask: torch.Tensor | None,    # (B, N) bool — for critic attention
+               joint_states: torch.Tensor,        
+               joint_actions: torch.Tensor,   
+               rewards: torch.Tensor,
+               next_joint_states: torch.Tensor, 
+               dones: torch.Tensor,               
+               next_actions_all: torch.Tensor,  
+               own_states: torch.Tensor,  
+               done_mask: torch.Tensor | None,
                next_done_mask: torch.Tensor | None,
                ) -> dict:
 
         self._critic_updates += 1
         losses = {}
 
-        # ── Critic update ─────────────────────────────────────────────
         with torch.no_grad():
             noise = (torch.randn_like(next_actions_all) * self.policy_noise
                     ).clamp(-self.noise_clip, self.noise_clip)
@@ -576,11 +454,9 @@ class ATTMATD3Agent:
         losses["critic1"] = c1_loss.item()
         losses["critic2"] = c2_loss.item()
 
-        # ── Delayed actor update ──────────────────────────────────────
         if self._critic_updates % self.policy_delay == 0:
-            a_i = self._scale(self.actor(own_states))  # (B, action_dim)
+            a_i = self._scale(self.actor(own_states))  
 
-            # Rebuild joint action with this agent's fresh action
             joint_a_grad = joint_actions.clone()
             start = self.id * self.action_dim
             end   = start + self.action_dim
@@ -597,10 +473,6 @@ class ATTMATD3Agent:
 
         return losses
 
-
-# ---------------------------------------------------------------------------
-# ATT-MATD3 coordinator
-# ---------------------------------------------------------------------------
 
 class ATTMATD3:
     """
@@ -665,10 +537,6 @@ class ATTMATD3:
 
         self.buffer = ReplayBuffer(capacity=buffer_size)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def select_actions(self, states: np.ndarray,
                        explore_noise: float = 0.1) -> np.ndarray:
         return np.array([
@@ -685,7 +553,7 @@ class ATTMATD3:
         Convert per-agent done vector (B, N) to a boolean mask for the
         attention critic.  Shape: (B, N).  True = agent is dead.
         """
-        return dones.bool()  # dones already stored as float; cast to bool
+        return dones.bool()  
 
     def train_step(self) -> dict:
         if len(self.buffer) < self.batch_size:
@@ -699,24 +567,21 @@ class ATTMATD3:
         SD = self.state_dim
         AD = self.action_dim
 
-        # Flatten for critic (critic receives flat joint tensors internally)
         flat_js  = joint_s.view(B, N * SD)
         flat_ja  = joint_a.view(B, N * AD)
         flat_njs = joint_ns.view(B, N * SD)
 
-        # Death masks for attention (B, N) bool
-        done_mask      = self._build_done_mask(dones, N)       # (B, N)
-        next_done_mask = done_mask                              # same step's dones
+        done_mask      = self._build_done_mask(dones, N)       
+        next_done_mask = done_mask                              
 
-        # Compute next actions from target actors
         with torch.no_grad():
             next_actions = []
             for i, agent in enumerate(self.agents):
-                ns_i   = joint_ns[:, i, :]                     # (B, state_dim)
+                ns_i   = joint_ns[:, i, :]                     
                 a_next = agent.actor_target(ns_i)
                 a_next = agent._scale(a_next)
                 next_actions.append(a_next)
-            next_joint_a = torch.cat(next_actions, dim=-1)     # (B, N*AD)
+            next_joint_a = torch.cat(next_actions, dim=-1)     
 
         all_losses = {}
         for i, agent in enumerate(self.agents):
@@ -739,9 +604,6 @@ class ATTMATD3:
 
         return all_losses
 
-    # ------------------------------------------------------------------
-    # Main training loop  (identical interface to MATD3.train)
-    # ------------------------------------------------------------------
 
     def train(self,
               env,
@@ -826,18 +688,11 @@ class ATTMATD3:
         return episode_returns
 
 
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
 
 def _soft_update(net: nn.Module, target: nn.Module, tau: float) -> None:
     for p, tp in zip(net.parameters(), target.parameters()):
         tp.data.copy_(tau * p.data + (1.0 - tau) * tp.data)
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     NUM_UAV    = 4
@@ -888,3 +743,7 @@ if __name__ == "__main__":
     )
 
     print(f"\n  Final episode return: {returns[-1]:.3f}")
+
+# AI Assistance: [Claude] was used to [update my code and ensure what I made corresponded to what the paper wanted to do.]
+# Date: [3 May 2026]
+# Modifications: I customized the generated code with any modifications that it hallucinated that did not follow with what the paper provided.
