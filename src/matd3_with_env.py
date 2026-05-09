@@ -9,11 +9,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import matplotlib
-matplotlib.use("Agg")          # headless-safe; swap to "TkAgg" for live window
+matplotlib.use("Agg") 
 import matplotlib.pyplot as plt
 
-# Real UAV combat simulator — place uav_sim.py on your PYTHONPATH or in the
-# same directory as this file.
+
 from sim import (
     MultiUAVSimulator,
     DT, G,
@@ -27,12 +26,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 PACKAGE_ROOT = Git(root_dir=".").root_dir
 
-# make sure output folder exists
 os.makedirs(f"{PACKAGE_ROOT}/outputs", exist_ok=True)
-
-# ---------------------------------------------------------------------------
-# Logging helpers
-# ---------------------------------------------------------------------------
 
 _HEADER_WIDTH = 72
 
@@ -62,11 +56,6 @@ def _print_attack_event(step: int, rewards: np.ndarray) -> None:
     r_str = "  ".join(f"A{i}={r:+.2f}" for i, r in enumerate(rewards))
     print(f"     Attack  step={step:>4d}  │  {r_str}")
 
-
-# ---------------------------------------------------------------------------
-# Reward plot
-# ---------------------------------------------------------------------------
-
 def save_reward_plot(episode_returns: list[float],
                      log_interval: int,
                      path: str = "reward_history.png") -> None:
@@ -76,7 +65,6 @@ def save_reward_plot(episode_returns: list[float],
     returns = np.array(episode_returns)
     eps     = np.arange(1, len(returns) + 1)
 
-    # Rolling mean with window = log_interval (or all data if shorter)
     window  = min(log_interval, len(returns))
     kernel  = np.ones(window) / window
     smooth  = np.convolve(returns, kernel, mode="valid")
@@ -99,48 +87,13 @@ def save_reward_plot(episode_returns: list[float],
     print(f"\n  📊  Reward plot saved → {path}")
 
 
-# ---------------------------------------------------------------------------
-# UAV environment adapter
-# ---------------------------------------------------------------------------
-
 class _FixedSizeMultiUAVSim(MultiUAVSimulator):
-    """
-    Thin subclass that disables agent removal.
-
-    ``MultiUAVSimulator.remove_destroyed()`` shrinks its internal state array
-    whenever a UAV is shot down, which would produce variable-length
-    observation tensors incompatible with MATD3's fixed batch dimensions.
-    Overriding it to a no-op keeps the state array at its original
-    (num_uav, 7) shape for the full episode duration.  Destroyed agents
-    are flagged in ``self.destroyed`` and are masked by the wrapper.
-    """
-
-    def remove_destroyed(self) -> None:  # type: ignore[override]
-        pass  # intentional no-op — masking handled by MultiUAVEnvWrapper
+    
+    def remove_destroyed(self) -> None: 
+        pass
 
 
 class MultiUAVEnvWrapper:
-    """
-    Adapter that presents ``MultiUAVSimulator`` to ``MATD3.train()``.
-
-    MATD3 requires a simple two-method interface::
-
-        states               = env.reset()          # (N, state_dim)
-        next_states, r, d, _ = env.step(actions)    # (N, state_dim), (N,), (N,), dict
-
-    Observation dimension is fixed for the full episode.  Because
-    ``_FixedSizeMultiUAVSim`` never shrinks its team-index arrays,
-    each UAV always observes exactly ``num_uav//2`` opponents and
-    ``num_uav//2 - 1`` allies, giving::
-
-        state_dim = 4 + 11 * (num_uav // 2) + 8 * (num_uav // 2 - 1)
-
-    Destroyed agents receive:
-    * zero action vector  (so their physics drift harmlessly)
-    * zero observation vector
-    * ``done = True``     (so the critic target is masked to 0)
-    * zero reward
-    """
 
     def __init__(self, num_uav: int = 4, dt: float = DT, g: float = G,
                  spawn_range=3000.0, spawn_radius=800.0):
@@ -150,17 +103,13 @@ class MultiUAVEnvWrapper:
         self._dt = dt
         self._g = g
 
-        n_opp  = num_uav // 2        # opponents observed per agent
-        n_ally = num_uav // 2 - 1   # allies observed per agent (self excluded)
+        n_opp  = num_uav // 2        
+        n_ally = num_uav // 2 - 1   
         self.state_dim = 4 + 11 * n_opp + 8 * n_ally
 
         self._sim: _FixedSizeMultiUAVSim | None = None
         self._spawn_range  = spawn_range
         self._spawn_radius = spawn_radius
-
-    # ------------------------------------------------------------------
-    # MATD3 interface
-    # ------------------------------------------------------------------
 
     def reset(self) -> np.ndarray:
         """Initialise a new episode and return the first joint observation."""
@@ -181,19 +130,6 @@ class MultiUAVEnvWrapper:
         return self._build_obs()
 
     def step(self, actions: np.ndarray):
-        """
-        Advance the simulation one step.
-
-        Args:
-            actions: ``(N, 3)`` float array — ``[T, L, beta]`` per agent.
-                     Destroyed agents' rows are zeroed before forwarding.
-
-        Returns:
-            next_states : ``(N, state_dim)`` float32 ndarray
-            rewards     : ``(N,)``           float32 ndarray
-            dones       : ``(N,)``           bool ndarray
-            info        : dict forwarded from the simulator
-        """
         actions = np.asarray(actions, dtype=np.float64).reshape(self.num_uav, 3)
         actions[self._sim.destroyed] = 0.0
 
@@ -207,10 +143,6 @@ class MultiUAVEnvWrapper:
 
         return next_states, rewards.astype(np.float32), per_agent_done, info
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _build_obs(self) -> np.ndarray:
         out = np.zeros((self.num_uav, self.state_dim), dtype=np.float32)
         for i in range(self.num_uav):
@@ -220,10 +152,6 @@ class MultiUAVEnvWrapper:
                 out[i, :n] = raw[:n].astype(np.float32)
         return out
 
-
-# ---------------------------------------------------------------------------
-# Replay buffer
-# ---------------------------------------------------------------------------
 
 class ReplayBuffer:
 
@@ -254,12 +182,7 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
-# ---------------------------------------------------------------------------
-# Actor / Critic networks
-# ---------------------------------------------------------------------------
-
 class Actor(nn.Module):
-    """Decentralized policy: a_i = mu_i(s_i)."""
 
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
@@ -275,7 +198,6 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    """Centralized Q-function over joint (s, a)."""
 
     def __init__(self, joint_state_dim: int, joint_action_dim: int,
                  hidden_dim: int = 256):
@@ -292,11 +214,6 @@ class Critic(nn.Module):
                 joint_action: torch.Tensor) -> torch.Tensor:
         x = torch.cat([joint_state, joint_action], dim=-1)
         return self.net(x)
-
-
-# ---------------------------------------------------------------------------
-# Per-agent MATD3 logic
-# ---------------------------------------------------------------------------
 
 class MATD3Agent:
 
@@ -405,10 +322,6 @@ class MATD3Agent:
         return losses
 
 
-# ---------------------------------------------------------------------------
-# MATD3 coordinator
-# ---------------------------------------------------------------------------
-
 class MATD3:
     """Multi-Agent Twin Delayed DDPG (CTDE)."""
 
@@ -508,10 +421,6 @@ class MATD3:
 
         return all_losses
 
-    # ------------------------------------------------------------------
-    # Main training loop
-    # ------------------------------------------------------------------
-
     def train(self,
               env,
               n_episodes: int     = 100_000,
@@ -519,20 +428,7 @@ class MATD3:
               explore_noise: float = 0.2,
               log_interval: int   = 1000,
               plot_path: str      = "reward_history.png") -> list[float]:
-        """
-        Main training loop with neat per-episode logging and reward plot.
-
-        Args:
-            env           : environment with reset() / step() interface
-            n_episodes    : total training episodes
-            max_steps     : max steps per episode
-            explore_noise : Gaussian exploration noise std
-            log_interval  : print rolling-average summary every N episodes
-            plot_path     : where to save the final reward graph
-
-        Returns:
-            episode_returns : list of total returns (one float per episode)
-        """
+        
         episode_returns: list[float] = []
 
         _print_header(
@@ -556,11 +452,7 @@ class MATD3:
             for step in range(1, max_steps + 1):
                 actions = self.select_actions(states, explore_noise)
                 next_states, rewards, dones, info = env.step(actions)
-                '''
-                # ── Print notable reward events ──────────────────────────
-                if np.any(rewards != 0):
-                    _print_attack_event(step, rewards)
-                '''
+
                 self.store_transition(states, actions, rewards,
                                       next_states, dones)
                 self.train_step()
@@ -573,7 +465,6 @@ class MATD3:
 
             episode_returns.append(ep_return)
 
-            # ── Per-episode summary line ─────────────────────────────────
             alive = int(np.sum(~env._sim.destroyed))
             avg   = float(np.mean(episode_returns[-log_interval:]))
             print(
@@ -609,7 +500,6 @@ class MATD3:
                 torch.save(checkpoint, f"checkpoint_ep{ep}.pt")
                 print(f"  💾  Checkpoint saved → checkpoint_ep{ep}.pt")
 
-        # ── Final plot ───────────────────────────────────────────────────
         _print_separator()
         print(f"\n  Training complete.  Total episodes: {n_episodes:,}")
         save_reward_plot(episode_returns, log_interval, path=plot_path)
@@ -639,12 +529,6 @@ class MATD3:
             velocities.append(info["velocity_vectors"])
             attacked.append(info["attacked"])
             destroyed.append(info["destroyed"])
-
-            '''
-            # ── Print notable reward events ──────────────────────────
-            if np.any(rewards != 0):
-                _print_attack_event(step, rewards)
-            '''
             self.store_transition(states, actions, rewards,
                                     next_states, dones)
             self.train_step()
@@ -679,12 +563,7 @@ class MATD3:
             agent.critic1_target.load_state_dict(weights["critic1_target"])
             agent.critic2_target.load_state_dict(weights["critic2_target"])
 
-        print(f"  ✅  Checkpoint loaded ← {path}")
-
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
+        print(f"Checkpoint loaded ← {path}")
 
 def _soft_update(net: nn.Module, target: nn.Module, tau: float) -> None:
     """Polyak averaging: θ_target ← τ·θ + (1-τ)·θ_target."""
@@ -692,13 +571,9 @@ def _soft_update(net: nn.Module, target: nn.Module, tau: float) -> None:
         tp.data.copy_(tau * p.data + (1.0 - tau) * tp.data)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     NUM_UAV    = 4
-    ACTION_DIM = 3   # [T, L, beta]
+    ACTION_DIM = 3  
 
     action_low  = np.array([T_MIN, L_MIN, BETA_MIN])
     action_high = np.array([T_MAX, L_MAX, BETA_MAX])
@@ -745,3 +620,7 @@ if __name__ == "__main__":
         )
 
         print(f"\n  Final episode return: {returns[-1]:.3f}")
+
+# AI Assistance: [Claude] was used to [update my code and ensure what I made corresponded to what the paper wanted to do and to clean up the printing in the terminal]
+# Date: [25 April 2026]
+# Modifications: I customized the generated code with any modifications that it hallucinated that did not follow with what the paper provided.
