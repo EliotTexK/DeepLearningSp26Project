@@ -474,7 +474,6 @@ class MATD3:
                 f"Alive: {alive}/{self.n_agents}"
             )
 
-            # ── Rolling-average banner every log_interval episodes ───────
             if ep % log_interval == 0:
                 _print_separator()
                 print(
@@ -485,7 +484,6 @@ class MATD3:
                 _print_separator()
                 save_reward_plot(episode_returns, log_interval, path=plot_path)
                 
-                # ── NEW: save weights ────────────────────────────────────────
                 checkpoint = {
                     i: {
                         "actor":          agent.actor.state_dict(),
